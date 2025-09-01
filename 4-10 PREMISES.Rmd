@@ -1,0 +1,99 @@
+---
+title: "DEST_PREMISES"
+author: "Ross Luo"
+date: "2025-03-18"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(caret)
+library(randomForest)
+```
+
+
+```{r}
+# Read in the data
+birthday <- read.csv("~/stat/Move in/Birthdate - Sheet1.csv")
+movein   <- read.csv("~/stat/Move in/MoveIn - Sheet1.csv")
+
+```
+
+```{r}
+head(birthday)
+birthday <- subset(birthday, select = -c(DOB, SOURCE_PREMISES))
+```
+
+```{r}
+head(movein)
+movein <- movein %>%
+  select(TAG_START, DEST_ACCOUNT)
+
+```
+
+```{r}
+combined_data <- inner_join(birthday, movein, by = "TAG_START")
+colSums(is.na(combined_data))
+
+```
+
+```{r}
+combined_data$SOURCE_ACCOUNT <- as.factor(combined_data$SOURCE_ACCOUNT)
+combined_data$DEST_ACCOUNT <- as.factor(combined_data$DEST_ACCOUNT)
+
+```
+
+```{r}
+library(caret)
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Split data into training and testing sets
+trainIndex <- createDataPartition(combined_data$DEST_ACCOUNT, p = 0.8, list = FALSE)
+train_data <- combined_data[trainIndex, ]
+test_data <- combined_data[-trainIndex, ]
+```
+
+```{r}
+# Train a random forest model
+library(randomForest)
+
+# Train the model
+rf_model <- randomForest(DEST_ACCOUNT ~ SOURCE_ACCOUNT, data = train_data, importance = TRUE, ntree = 100)
+
+
+
+```
+
+```{r}
+# Make predictions on the test data
+rf_predictions <- predict(rf_model, newdata = test_data)
+
+# Create a data frame with actual and predicted values
+predictions_df <- data.frame(
+  ID = test_data$TAG_START,  # TAG_START as the identifier
+  ACTUAL = test_data$DEST_ACCOUNT,  # Actual DEST_ACCOUNT
+  PREDICTION = rf_predictions  # Predicted DEST_ACCOUNT
+)
+
+# Add a column to check if the prediction is correct
+predictions_df$TRUE_OR_FALSE <- predictions_df$ACTUAL == predictions_df$PREDICTION
+
+# Calculate the accuracy
+accuracy <- sum(predictions_df$TRUE_OR_FALSE) / nrow(predictions_df)
+
+# Add accuracy to the DataFrame (same for all rows)
+predictions_df$ACCURACY <- accuracy
+
+# Print the first few rows of the predictions for inspection
+head(predictions_df)
+
+# Write the results to a CSV file
+write.csv(predictions_df, file = "predictions_results.csv", row.names = FALSE)
+
+# Print accuracy result
+cat("Accuracy: ", accuracy * 100, "%\n")
+
+```

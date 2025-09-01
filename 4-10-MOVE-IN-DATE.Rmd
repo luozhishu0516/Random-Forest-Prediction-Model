@@ -1,0 +1,204 @@
+---
+title: "Final Prediction"
+author: "Ross Luo"
+date: "2025-04-09"
+output: pdf_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(caret)
+library(randomForest)
+```
+
+**Read dataset from the 'Birthdate' and 'MoveIn' CSV files** **If new
+data needs to be read, just add the file path in the read.csv()
+function**
+
+```{r}
+birthday <- read.csv("~/stat/Move in/Birthdate - Sheet1.csv")
+movein   <- read.csv("~/stat/Move in/MoveIn - Sheet1.csv")
+```
+
+**Convert all dates to yyyy-mm-dd format Since the orignal date has time
+included**
+
+```{R}
+
+birthday$DOB <- mdy_hm(birthday$DOB) %>% as.Date()
+movein$EVENT_DATE <- mdy_hm(movein$EVENT_DATE) %>% as.Date()
+```
+
+**For each cattle (TAG_START) in the movein dataset, keep only the
+record with the latest EVENT_DATE to avoid dublicate**
+
+```{r}
+movein <- movein %>%
+  group_by(TAG_START) %>%
+  filter(EVENT_DATE == max(EVENT_DATE)) %>%
+  ungroup()
+```
+
+**Remove duplicate TAG_START records in both datasets**
+
+```{r}
+birthday <- birthday %>% distinct(TAG_START, .keep_all = TRUE)
+movein   <- movein %>% distinct(TAG_START, .keep_all = TRUE)
+```
+
+**Merge the movein data and birthday data together by TAG_START**
+
+```{r}
+merged_data <- movein %>%
+  left_join(birthday, by = "TAG_START")
+```
+
+**Remove the SOURCE_PREMISES column as it contains mostly missing
+values**
+
+```{r}
+merged_data <- merged_data %>%
+  select(-SOURCE_PREMISES)
+```
+
+**Now we begin to analyze the data and see the distribution of our
+dataset**
+
+```{r}
+ggplot(merged_data, aes(x = DOB)) +
+  geom_density(fill = "lightblue") +
+  labs(title = "Density Plot of Dates of Birth", x = "Date of Birth", y = "Density")
+```
+
+**Filter out outliers (dates before 2020)**
+
+```{r}
+merged_data <- merged_data %>%
+  filter(DOB >= as.Date("2020-01-01"))
+
+# Plot again to see the filtered data
+ggplot(merged_data, aes(x = DOB)) +
+  geom_density(fill = "lightblue") +
+  labs(title = "Density Plot of Dates of Birth", x = "Date of Birth", y = "Density")
+```
+
+**Feature engineering: create new columns**
+
+```{r}
+merged_data <- merged_data %>%
+  mutate(
+    age_at_movein_days = as.numeric(EVENT_DATE - DOB),
+    dob_month = month(DOB),
+    dob_weekday = wday(DOB, label = TRUE),
+    movein_month = month(EVENT_DATE),
+    movein_weekday = wday(EVENT_DATE, label = TRUE)
+  )
+
+
+```
+
+```{r}
+# Convert EVENT_DATE to numeric (days since a reference date)
+merged_data$EVENT_DATE_numeric <- as.numeric(merged_data$EVENT_DATE - as.Date("2000-01-01"))
+
+# Select relevant features for the model
+model_data <- merged_data %>%
+  select(EVENT_DATE_numeric, age_at_movein_days, dob_month, dob_weekday, movein_month, movein_weekday)
+
+# Convert categorical variables to factors
+model_data <- model_data %>%
+  mutate(across(where(is.character), as.factor))
+
+```
+
+**Train the random forest model**
+
+```{r}
+# Split the data into training (80%) and testing (20%) sets
+set.seed(123)
+train_index <- createDataPartition(model_data$EVENT_DATE_numeric, p = 0.8, list = FALSE)
+train_data <- model_data[train_index, ]
+test_data <- model_data[-train_index, ]
+
+# Train the random forest model on the training data
+rf_model <- train(EVENT_DATE_numeric ~ ., data = train_data, method = "rf")
+rf_model
+```
+Testing
+```{r}
+# Make predictions on the test data
+predicted_event_date_numeric <- predict(rf_model, newdata = test_data)
+
+# Convert numeric predictions back to date
+predicted_event_date <- as.Date(predicted_event_date_numeric, origin = "2000-01-01")
+
+# Add margin of error (30 days) and round to the nearest month
+margin_of_error_days <- 30
+predicted_event_date_lower <- predicted_event_date - margin_of_error_days
+predicted_event_date_upper <- predicted_event_date + margin_of_error_days
+predicted_event_date_rounded <- floor_date(predicted_event_date, "month")
+
+# Add predictions to the test dataset
+test_data$predicted_EVENT_DATE <- predicted_event_date
+test_data$predicted_event_date_lower <- predicted_event_date_lower
+test_data$predicted_event_date_upper <- predicted_event_date_upper
+test_data$predicted_event_date_rounded <- predicted_event_date_rounded
+
+# Create a data frame with actual and predicted values
+predictions_df <- data.frame(
+  TAG_START = merged_data$TAG_START[-train_index],  # Use the test set indices
+  Actual_EVENT_DATE = merged_data$EVENT_DATE[-train_index],  # Use the test set indices
+  Predicted_EVENT_DATE = predicted_event_date,
+  predicted_event_date_lower = predicted_event_date_lower,
+  predicted_event_date_upper = predicted_event_date_upper,
+  predicted_event_date_rounded = predicted_event_date_rounded
+)
+
+# Check if the actual event date is within the predicted range
+predictions_df$actual_within_range <- with(predictions_df, 
+  Actual_EVENT_DATE >= predicted_event_date_lower & Actual_EVENT_DATE <= predicted_event_date_upper
+)
+
+# Calculate the accuracy of predictions within the margin
+accuracy_within_margin <- mean(predictions_df$actual_within_range)
+cat("Accuracy within margin of error:", accuracy_within_margin * 100, "%\n")
+
+write.csv(predictions_df, "updated_prediction_event_date.csv", row.names = FALSE)
+
+```
+
+```{r}
+
+# Make predictions on the test data
+predicted_event_date_numeric <- predict(rf_model, newdata = test_data)
+
+# Convert numeric predictions back to date
+predicted_event_date <- as.Date(predicted_event_date_numeric, origin = "2000-01-01")
+
+# Add predictions to the test dataset
+test_data$predicted_EVENT_DATE <- predicted_event_date
+
+# Create a data frame with actual and predicted values
+predictions_df <- data.frame(
+  TAG_START = merged_data$TAG_START[-train_index],  # Use the test set indices
+  Actual_EVENT_DATE = merged_data$EVENT_DATE[-train_index],  # Use the test set indices
+  Predicted_EVENT_DATE = predicted_event_date
+)
+```
+
+**Write the predictions to a CSV file**
+
+```{r}
+# Write the predictions to a CSV file
+write.csv(predictions_df, "prediction_event_date.csv", row.names = FALSE)
+
+# Print a message
+cat("Predictions have been written to 'predictions_event_date.csv'\n")
+
+```
+
+By the excel sheet the accuarcy is 26%
